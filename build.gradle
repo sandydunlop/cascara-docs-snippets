@@ -3,7 +3,7 @@ tasks.register("extractExamples") {
     description = "Extracts @Example-annotated Java classes into MkDocs snippet files"
 
     def sourceDir = file("../cascara-docs-examples-lang/app/src/main/java/io/github/qishr/cascara/docs/examples")
-    def outputDir = file("../../../web/website/docs/snippets/examples")
+    def outputDir = file("../../../qishr.github.io/src/docs/snippets/examples")
 
     inputs.dir(sourceDir)
     outputs.dir(outputDir)
@@ -68,12 +68,45 @@ ext.myMethod = { buildFile, outputPath ->
     println "Extracted build file to ${outputPath}"
 }
 
+ext.convertGradleToMaven = { gradleFile, outputPath ->
+    if (!gradleFile.exists()) {
+        throw new GradleException("build.gradle not found: ${gradleFile}")
+    }
+
+    def lines = gradleFile.text.readLines()
+    def depLines = lines.findAll { it.trim().startsWith("implementation ") }
+
+    def xml = new StringBuilder()
+    xml.append("<dependencies>\n")
+
+    depLines.each { line ->
+        def matcher = line.trim() =~ /implementation\s+"([^:]+):([^:]+):([^"]+)"/
+        if (matcher.matches()) {
+            def groupId    = matcher[0][1]
+            def artifactId = matcher[0][2]
+            def version    = matcher[0][3]
+            xml.append("    <dependency>\n")
+            xml.append("        <groupId>${groupId}</groupId>\n")
+            xml.append("        <artifactId>${artifactId}</artifactId>\n")
+            xml.append("        <version>${version}</version>\n")
+            xml.append("    </dependency>\n")
+        }
+    }
+
+    xml.append("</dependencies>")
+
+    def outFile = file(outputPath)
+    outFile.text = xml.toString()
+
+    println "Converted Maven POM snippet to ${outputPath}"
+}
+
 tasks.register("extractLangGradleDeps") {
     group = "documentation"
     description = "Extracts Gradle dependencies for non-UI projects using language processors"
 
     def buildFile = file("../cascara-docs-examples-lang/app/build.gradle")
-    def outputFile = file("../../../web/website/docs/snippets/build-lang.gradle")
+    def outputFile = file("../../../qishr.github.io/src/docs/snippets/build-lang.gradle")
 
     dependsOn "extractExamples"
 
@@ -89,7 +122,7 @@ tasks.register("extractUiGradleDeps") {
     description = "Extracts Gradle dependencies for UI projects"
 
     def buildFile = file("../cascara-docs-examples-ui/build.gradle")
-    def outputFile = file("../../../web/website/docs/snippets/build-ui.gradle")
+    def outputFile = file("../../../qishr.github.io/src/docs/snippets/build-ui.gradle")
 
     dependsOn "extractExamples"
 
@@ -100,8 +133,41 @@ tasks.register("extractUiGradleDeps") {
     }
 }
 
+tasks.register("extractLangMavenDeps") {
+    group = "documentation"
+    description = "Extracts Maven dependencies for non-UI projects using language processors"
+
+    def buildFile = file("../cascara-docs-examples-lang/app/build.gradle")
+    def outputFile = file("../../../qishr.github.io/src/docs/snippets/pom-lang.xml")
+
+    dependsOn "extractExamples"
+
+    inputs.file(buildFile)
+
+    doLast {
+        convertGradleToMaven(buildFile, outputFile)
+    }
+}
+
+tasks.register("extractUiMavenDeps") {
+    group = "documentation"
+    description = "Extracts Maven dependencies for UI projects"
+
+    def buildFile = file("../cascara-docs-examples-ui/build.gradle")
+    def outputFile = file("../../../qishr.github.io/src/docs/snippets/pom-ui.xml")
+
+    dependsOn "extractExamples"
+
+    inputs.file(buildFile)
+
+    doLast {
+        convertGradleToMaven(buildFile, outputFile)
+    }
+}
 
 tasks.register("run") {
     dependsOn "extractLangGradleDeps"
     dependsOn "extractUiGradleDeps"
+    dependsOn "extractLangMavenDeps"
+    dependsOn "extractUiMavenDeps"
 }
