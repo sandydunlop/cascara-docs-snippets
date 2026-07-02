@@ -1,173 +1,186 @@
-tasks.register("extractExamples") {
-    group = "documentation"
-    description = "Extracts @Example-annotated Java classes into MkDocs snippet files"
+ext.snippetsDir = "../../../qishr.github.io/src/docs/snippets"
 
-    def sourceDir = file("../cascara-docs-examples-lang/app/src/main/java/io/github/qishr/cascara/docs/examples")
-    def outputDir = file("../../../qishr.github.io/src/docs/snippets/examples")
+ext.domains = [
+    lang:   "../cascara-docs-examples/examples/lang",
+    schema: "../cascara-docs-examples/examples/schema",
+    ui:     "../cascara-docs-examples/examples/ui"
+]
 
-    inputs.dir(sourceDir)
-    outputs.dir(outputDir)
+// ── Shared Methods ───────────────────────────────────────────────────────────
 
-    doLast {
-        if (!sourceDir.exists()) {
-            throw new GradleException("Source directory not found: ${sourceDir}")
-        }
+ext.extractExampleSources = { sourceDir, outputDir ->
+    if (!sourceDir.exists()) {
+        throw new GradleException("Source directory not found: ${sourceDir}")
+    }
 
-        outputDir.deleteDir()
-        outputDir.mkdirs()
+    outputDir.deleteDir()
+    outputDir.mkdirs()
 
-        int count = 0
-        sourceDir.eachFileRecurse { javaFile ->
-            if (javaFile.isFile() && javaFile.name.endsWith(".java")) {
-                def content = javaFile.text
-                if (content.contains("@Example")) {
-                    def lines = content.readLines()
-                    def exampleIndex = lines.findIndexOf { it.trim() == "@Example" }
-                    def trimmedLines = exampleIndex >= 0 ? lines.drop(exampleIndex + 1) : lines
+    int count = 0
+    sourceDir.eachFileRecurse { javaFile ->
+        if (javaFile.isFile() && javaFile.name.endsWith(".java")) {
+            def content = javaFile.text
+            if (content.contains("@Example")) {
+                def lines = content.readLines()
+                def exampleIndex = lines.findIndexOf { it.trim() == "@Example" }
+                def trimmedLines = exampleIndex >= 0 ? lines.drop(exampleIndex + 1) : lines
 
-                    // Drop leading blank lines left over after stripping
-                    while (!trimmedLines.isEmpty() && trimmedLines.first().trim().isEmpty()) {
-                        trimmedLines = trimmedLines.drop(1)
-                    }
-
-                    def relativePath = sourceDir.toPath().relativize(javaFile.toPath()).toString()
-                    def outFile = new File(outputDir, relativePath)
-                    outFile.parentFile.mkdirs()
-                    outFile.text = trimmedLines.join("\n")
-                    count++
+                while (!trimmedLines.isEmpty() && trimmedLines.first().trim().isEmpty()) {
+                    trimmedLines = trimmedLines.drop(1)
                 }
+
+                def relativePath = sourceDir.toPath().relativize(javaFile.toPath()).toString()
+                def outFile = new File(outputDir, relativePath)
+                outFile.parentFile.mkdirs()
+                outFile.text = trimmedLines.join("\n")
+                count++
             }
         }
-
-        println "Extracted ${count} example(s) to ${outputDir}"
     }
+
+    println "Extracted ${count} example(s) to ${outputDir}"
 }
 
-ext.myMethod = { buildFile, outputPath ->
-    // Method body here
+ext.extractGradleDeps = { buildFile, outputPath ->
     if (!buildFile.exists()) {
         throw new GradleException("build.gradle not found: ${buildFile}")
     }
 
-    def content = buildFile.text
-    def lines = content.readLines()
+    def lines = buildFile.text.readLines()
     def depsIndex = lines.findIndexOf { it.trim() == "dependencies {" }
     def trimmedLines = depsIndex >= 0 ? lines.drop(depsIndex) : lines
 
     def depsCloseIndex = trimmedLines.findIndexOf { it.trim() == "}" }
     trimmedLines = depsCloseIndex >= 0 ? trimmedLines.take(depsCloseIndex + 1) : trimmedLines
 
-    // Drop leading blank lines left over after stripping
     while (!trimmedLines.isEmpty() && trimmedLines.first().trim().isEmpty()) {
         trimmedLines = trimmedLines.drop(1)
     }
 
-    def outFile = file(outputPath)
-    outFile.text = trimmedLines.join("\n")
-
-    println "Extracted build file to ${outputPath}"
+    file(outputPath).text = trimmedLines.join("\n")
+    println "Extracted Gradle dependencies to ${outputPath}"
 }
 
-ext.convertGradleToMaven = { gradleFile, outputPath ->
-    if (!gradleFile.exists()) {
-        throw new GradleException("build.gradle not found: ${gradleFile}")
+ext.convertGradleToMaven = { buildFile, outputPath ->
+    if (!buildFile.exists()) {
+        throw new GradleException("build.gradle not found: ${buildFile}")
     }
 
-    def lines = gradleFile.text.readLines()
-    def depLines = lines.findAll { it.trim().startsWith("implementation ") }
+    def depLines = buildFile.text.readLines().findAll {
+        it.trim().startsWith("implementation ") ||
+        it.trim().startsWith("implementation platform(")
+    }
 
-    def xml = new StringBuilder()
-    xml.append("<dependencies>\n")
+    def boms = []
+    def deps = []
 
     depLines.each { line ->
-        def matcher = line.trim() =~ /implementation\s+"([^:]+):([^:]+):([^"]+)"/
-        if (matcher.matches()) {
-            def groupId    = matcher[0][1]
-            def artifactId = matcher[0][2]
-            def version    = matcher[0][3]
-            xml.append("    <dependency>\n")
-            xml.append("        <groupId>${groupId}</groupId>\n")
-            xml.append("        <artifactId>${artifactId}</artifactId>\n")
-            xml.append("        <version>${version}</version>\n")
-            xml.append("    </dependency>\n")
+        def trimmed = line.trim()
+        def bomMatcher = trimmed =~ /implementation platform\("([^:]+):([^:]+):([^"]+)"\)/
+        def depMatcher = trimmed =~ /implementation "([^:]+):([^:]+):([^"]+)"/
+
+        if (bomMatcher.matches()) {
+            boms << [groupId: bomMatcher[0][1], artifactId: bomMatcher[0][2], version: bomMatcher[0][3]]
+        } else if (depMatcher.matches()) {
+            deps << [groupId: depMatcher[0][1], artifactId: depMatcher[0][2], version: depMatcher[0][3]]
         }
     }
 
+    def xml = new StringBuilder()
+
+    if (!boms.isEmpty()) {
+        xml.append("<dependencyManagement>\n")
+        xml.append("    <dependencies>\n")
+        boms.each { bom ->
+            xml.append("        <dependency>\n")
+            xml.append("            <groupId>${bom.groupId}</groupId>\n")
+            xml.append("            <artifactId>${bom.artifactId}</artifactId>\n")
+            xml.append("            <version>${bom.version}</version>\n")
+            xml.append("            <type>pom</type>\n")
+            xml.append("            <scope>import</scope>\n")
+            xml.append("        </dependency>\n")
+        }
+        xml.append("    </dependencies>\n")
+        xml.append("</dependencyManagement>\n\n")
+    }
+
+    xml.append("<dependencies>\n")
+    deps.each { dep ->
+        xml.append("    <dependency>\n")
+        xml.append("        <groupId>${dep.groupId}</groupId>\n")
+        xml.append("        <artifactId>${dep.artifactId}</artifactId>\n")
+        if (!boms.isEmpty()) {
+            xml.append("        <!-- version managed by BOM -->\n")
+        } else {
+            xml.append("        <version>${dep.version}</version>\n")
+        }
+        xml.append("    </dependency>\n")
+    }
     xml.append("</dependencies>")
 
-    def outFile = file(outputPath)
-    outFile.text = xml.toString()
-
+    file(outputPath).text = xml.toString()
     println "Converted Maven POM snippet to ${outputPath}"
 }
 
-tasks.register("extractLangGradleDeps") {
-    group = "documentation"
-    description = "Extracts Gradle dependencies for non-UI projects using language processors"
+// ── Generated Tasks ──────────────────────────────────────────────────────────
 
-    def buildFile = file("../cascara-docs-examples-lang/app/build.gradle")
-    def outputFile = file("../../../qishr.github.io/src/docs/snippets/build-lang.gradle")
+def allExtractionTasks = []
 
-    dependsOn "extractExamples"
+domains.each { name, examplesDir ->
+    def capitalized = name.capitalize()
+    def packagePath = "src/main/java/io/github/qishr/cascara/docs/examples/${name}"
 
-    inputs.file(buildFile)
+    def extractExamplesTask = "extract${capitalized}Examples"
+    def extractGradleTask   = "extract${capitalized}GradleDeps"
+    def extractMavenTask    = "extract${capitalized}MavenDeps"
 
-    doLast {
-        myMethod(buildFile, outputFile)
+    tasks.register(extractExamplesTask) {
+        group = "documentation"
+        description = "Extracts @Example-annotated Java classes for ${name}"
+
+        def sourceDir = file("${examplesDir}/${packagePath}")
+        def outputDir = file("${snippetsDir}/examples/${name}")
+
+        inputs.dir(sourceDir)
+        outputs.dir(outputDir)
+
+        doLast { extractExampleSources(sourceDir, outputDir) }
     }
+
+    tasks.register(extractGradleTask) {
+        group = "documentation"
+        description = "Extracts Gradle dependencies for ${name}"
+
+        def buildFile  = file("${examplesDir}/build.gradle")
+        def outputFile = file("${snippetsDir}/build-${name}.gradle")
+
+        dependsOn extractExamplesTask
+        inputs.file(buildFile)
+
+        doLast { extractGradleDeps(buildFile, outputFile) }
+    }
+
+    tasks.register(extractMavenTask) {
+        group = "documentation"
+        description = "Extracts Maven POM dependencies for ${name}"
+
+        def buildFile  = file("${examplesDir}/build.gradle")
+        def outputFile = file("${snippetsDir}/pom-${name}.xml")
+
+        dependsOn extractExamplesTask
+        inputs.file(buildFile)
+
+        doLast { convertGradleToMaven(buildFile, outputFile) }
+    }
+
+    allExtractionTasks << extractGradleTask
+    allExtractionTasks << extractMavenTask
 }
 
-tasks.register("extractUiGradleDeps") {
-    group = "documentation"
-    description = "Extracts Gradle dependencies for UI projects"
-
-    def buildFile = file("../cascara-docs-examples-ui/build.gradle")
-    def outputFile = file("../../../qishr.github.io/src/docs/snippets/build-ui.gradle")
-
-    dependsOn "extractExamples"
-
-    inputs.file(buildFile)
-
-    doLast {
-        myMethod(buildFile, outputFile)
-    }
-}
-
-tasks.register("extractLangMavenDeps") {
-    group = "documentation"
-    description = "Extracts Maven dependencies for non-UI projects using language processors"
-
-    def buildFile = file("../cascara-docs-examples-lang/app/build.gradle")
-    def outputFile = file("../../../qishr.github.io/src/docs/snippets/pom-lang.xml")
-
-    dependsOn "extractExamples"
-
-    inputs.file(buildFile)
-
-    doLast {
-        convertGradleToMaven(buildFile, outputFile)
-    }
-}
-
-tasks.register("extractUiMavenDeps") {
-    group = "documentation"
-    description = "Extracts Maven dependencies for UI projects"
-
-    def buildFile = file("../cascara-docs-examples-ui/build.gradle")
-    def outputFile = file("../../../qishr.github.io/src/docs/snippets/pom-ui.xml")
-
-    dependsOn "extractExamples"
-
-    inputs.file(buildFile)
-
-    doLast {
-        convertGradleToMaven(buildFile, outputFile)
-    }
-}
+// ── Run ──────────────────────────────────────────────────────────────────────
 
 tasks.register("run") {
-    dependsOn "extractLangGradleDeps"
-    dependsOn "extractUiGradleDeps"
-    dependsOn "extractLangMavenDeps"
-    dependsOn "extractUiMavenDeps"
+    group = "documentation"
+    description = "Runs all extraction tasks"
+    dependsOn allExtractionTasks
 }
